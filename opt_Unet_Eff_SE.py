@@ -12,6 +12,7 @@ import json
 import pandas as pd
 import csv
 import numpy as np
+import pickle
 import optuna
 from segmentation_models.metrics import iou_score, IOUScore, FScore
 from keras.callbacks import ModelCheckpoint
@@ -104,38 +105,29 @@ gerador_treino = image_mask_generator(train_images_list, train_images_path, trai
 #VAL
 gerador_validacao = image_mask_generator(val_images_list, val_images_path, val_masks_path)
 #TEST
-gerador_teste = image_mask_generator(test_images_list, test_images_path, test_masks_path)
-
-def dice_coefficient(y_true, y_pred, smooth=1):
-    intersection = tf.reduce_sum(y_true * y_pred)
-    union = tf.reduce_sum(y_true) + tf.reduce_sum(y_pred)
-    dice = (2. * intersection + smooth) / (union + smooth)
-    return dice
-# Definindo a métrica Dice
-def dice_metric(y_true, y_pred):
-    return dice_coefficient(y_true, y_pred)
+gerador_teste = image_mask_generator(test_images_list, test_images_path, test_masks_path, batch_size=1)
 
 
 """ Função Squeeze Excitation """
 
-def SqueezeAndExcitation(inputs, ratio=8):
-    b, h, w, c = inputs.shape
+# def SqueezeAndExcitation(inputs, ratio=8):
+#     b, h, w, c = inputs.shape
 
-    ## Squeeze
-    x = GlobalAveragePooling2D()(inputs)
+#     ## Squeeze
+#     x = GlobalAveragePooling2D()(inputs)
 
-    ## Excitation
-    x = Dense(c//ratio, activation='relu', use_bias=False, kernel_regularizer=l2(0.01))(x)
-    x = Dense(c, activation='sigmoid', use_bias=False, kernel_regularizer=l2(0.01))(x)
+#     ## Excitation
+#     x = Dense(c//ratio, activation='relu', use_bias=False, kernel_regularizer=l2(0.01))(x)
+#     x = Dense(c, activation='sigmoid', use_bias=False, kernel_regularizer=l2(0.01))(x)
 
-    ## Ensure x has dimensions (batch_size, 1, 1, channels)
-    x = tf.expand_dims(x, axis=1)
-    x = tf.expand_dims(x, axis=1)
+#     ## Ensure x has dimensions (batch_size, 1, 1, channels)
+#     x = tf.expand_dims(x, axis=1)
+#     x = tf.expand_dims(x, axis=1)
 
-    ## Scaling
-    x = inputs * x
+#     ## Scaling
+#     x = inputs * x
 
-    return x
+#     return x
 
 
 def conv_block(inputs, num_filters):
@@ -152,7 +144,7 @@ def conv_block(inputs, num_filters):
 def decoder_block(inputs, skip, num_filters):
     x = Conv2DTranspose(num_filters, (2,2), strides=2, padding='same', kernel_regularizer=l2(0.01))(inputs)
     # Applying SE block
-    x = SqueezeAndExcitation(x)
+    # x = SqueezeAndExcitation(x)
     x = Concatenate()([x, skip])
     x = conv_block(x, num_filters)
     return x
@@ -196,7 +188,6 @@ def build_efficient_unet(input_shape, cnn_model):
     return model
 
 
-
 def objective(trial):
     # Defina o espaço de pesquisa para os hiperparâmetros que deseja otimizar
     # Adicione outros hiperparâmetros aqui
@@ -208,9 +199,11 @@ def objective(trial):
 
     modelo = build_efficient_unet(input_shape=(224,224,3), cnn_model=cnn_model)
     # Compile o modelo com os hiperparâmetros sugeridos
+    metrics = [IOUScore(class_indexes=1, threshold=0.5, name='iou_disco'), IOUScore(class_indexes=2, threshold=0.5, name='iou_cup'), FScore(class_indexes=1, threshold=0.5, name='dice_disco'), FScore(class_indexes=2, threshold=0.5, name='dice_cup')]
+
     modelo.compile(optimizer=tf.keras.optimizers.Adam(learning_rate=LEARNING_RATE),
                    loss='categorical_crossentropy',
-                   metrics= [IOUScore(class_indexes=1, threshold=0.5, name='iou_disco'), IOUScore(class_indexes=2, threshold=0.5, name='iou_cup'), FScore(class_indexes=1, threshold=0.5, name='dice_disco'), FScore(class_indexes=2, threshold=0.5, name='dice_cup')])
+                   metrics= metrics)
     
     callbacks_list = [EarlyStopping(monitor = 'val_iou_cup', patience = 25, mode = 'auto', verbose = 1), 
                     ModelCheckpoint(f"/home/arthur_guilherme/pibic_mack-24/segmentation_refuge/checkpoint/best_model_weights.h5", monitor = 'val_iou_cup', verbose = 1, save_best_only = True,save_weights_only = True, mode= 'max', initial_value_threshold=0.7)]
@@ -230,9 +223,15 @@ def objective(trial):
                validation_steps=ceil(len(val_images_list)/BATCH_SIZE),
                verbose=1)
     
+    # y_pred = modelo.predict(gerador_teste, 
+    #     verbose=1,
+    #     steps=ceil(len(test_images_list)/1))
+    
+    score = modelo.evaluate_generator(gerador_teste, steps=ceil(len(test_images_list)/1), verbose=1)
+
     iou_cup = max(history.history['val_iou_cup'])  # Obtém o valor da IoU da classe "cup" na última época de validação
 
-    return iou_cup
+    return iou_cup, score
 
 
 # Configurar um estudo Optuna
@@ -254,16 +253,8 @@ study.optimize(objective, n_trials = 2, gc_after_trial = True)
 # print('Best Score:', best_score)
 
 
-# # Salvar os resultados em um arquivo JSON
-# results = {
-#     "best_params": best_params,
-#     "best_score": best_score
-# }
 
-# with open("optimization_results.json", "w") as f:
-#     json.dump(results, f)
-
-# # Alternativamente, salvar em um arquivo CSV
+# Alternativamente, salvar em um arquivo CSV
 
 # with open("optimization_results.csv", "w", newline="") as f:
 #     writer = csv.writer(f)
