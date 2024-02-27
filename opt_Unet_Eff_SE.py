@@ -173,14 +173,14 @@ def build_efficient_unet(input_shape, cnn_model):
     
     # encoder.summary()
 
-    s1 = encoder.layers[0].output    # 256
-    s2 = encoder.layers[16].output   # 128
-    s3 = encoder.layers[44].output   # 64
-    s4 = encoder.layers[72].output   # 32
+    s1 = encoder.layers[0].output    # 256   B1 0    B2 0
+    s2 = encoder.layers[20].output   # 128   32
+    s3 = encoder.layers[49].output   # 64    76
+    s4 = encoder.layers[78].output   # 32    120
                         
 
     """ Bottleneck """
-    b1 = encoder.layers[158].output        ## 16
+    b1 = encoder.layers[165].output        ## 16
 
     """ Decoder """
     d1 = decoder_block(b1, s4, 512)                                    ## 32
@@ -204,16 +204,16 @@ def objective(trial):
     EPOCHS = trial.suggest_categorical('epochs', [100, 80, 60])
     BATCH_SIZE = trial.suggest_categorical('batch_size', [4, 8, 16])
     
-    cnn_model = trial.suggest_categorical('cnn_model',['EfficientNetB0','EfficientNetB1','EfficientNetB2'])
+    cnn_model = trial.suggest_categorical('cnn_model',['EfficientNetB0']) #,'EfficientNetB1','EfficientNetB2'
 
     modelo = build_efficient_unet(input_shape=(224,224,3), cnn_model=cnn_model)
     # Compile o modelo com os hiperparâmetros sugeridos
     modelo.compile(optimizer=tf.keras.optimizers.Adam(learning_rate=LEARNING_RATE),
                    loss='categorical_crossentropy',
-                   metrics=['accuracy', tf.keras.metrics.OneHotMeanIoU(num_classes=3), dice_metric])
+                   metrics= [IOUScore(class_indexes=1, threshold=0.5, name='iou_disco'), IOUScore(class_indexes=2, threshold=0.5, name='iou_cup'), FScore(class_indexes=1, threshold=0.5, name='dice_disco'), FScore(class_indexes=2, threshold=0.5, name='dice_cup')])
     
-    callbacks_list = [EarlyStopping(monitor = 'val_one_hot_mean_io_u', patience = 25, mode = 'auto', verbose = 1), 
-                    ModelCheckpoint(f"/home/arthur_guilherme/pibic_mack-24/segmentation_refuge/checkpoint/best_model_weights.h5", monitor = 'val_one_hot_mean_io_u', verbose = 1, save_best_only = True,save_weights_only = True, mode= 'max', initial_value_threshold=0.7)]
+    callbacks_list = [EarlyStopping(monitor = 'val_iou_cup', patience = 25, mode = 'auto', verbose = 1), 
+                    ModelCheckpoint(f"/home/arthur_guilherme/pibic_mack-24/segmentation_refuge/checkpoint/best_model_weights.h5", monitor = 'val_iou_cup', verbose = 1, save_best_only = True,save_weights_only = True, mode= 'max', initial_value_threshold=0.7)]
     
     
     print("LEARNING_RATE:", LEARNING_RATE)
@@ -222,7 +222,7 @@ def objective(trial):
     print("CNN_MODEL:", cnn_model)
 
     # Treine o modelo
-    modelo.fit(gerador_treino,
+    history = modelo.fit(gerador_treino,
                validation_data=gerador_validacao,
                epochs= EPOCHS,
                callbacks=callbacks_list,
@@ -230,9 +230,10 @@ def objective(trial):
                validation_steps=ceil(len(val_images_list)/BATCH_SIZE),
                verbose=1)
     
-    # Avalie o modelo usando a métrica de validação
-    # score = modelo.evaluate(gerador_validacao, verbose=0)
-    return  modelo # Retorna a métrica de validação (IoU ou Dice, por exemplo)
+    iou_cup = max(history.history['val_iou_cup'])  # Obtém o valor da IoU da classe "cup" na última época de validação
+
+    return iou_cup
+
 
 # Configurar um estudo Optuna
  # ou 'minimize' dependendo da métrica que deseja otimizar
@@ -246,11 +247,11 @@ study = optuna.create_study(direction ='maximize', study_name = "starter-experim
 study.optimize(objective, n_trials = 2, gc_after_trial = True)
 
 
-# Obtenha os melhores hiperparâmetros encontrados
-best_params = study.best_params
-best_score = study.best_value
-print('Best Parameters:', best_params)
-print('Best Score:', best_score)
+# # Obtenha os melhores hiperparâmetros encontrados
+# best_params = study.best_params
+# best_score = study.best_value
+# print('Best Parameters:', best_params)
+# print('Best Score:', best_score)
 
 
 # # Salvar os resultados em um arquivo JSON
